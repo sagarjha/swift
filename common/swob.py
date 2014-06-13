@@ -748,6 +748,7 @@ class Request(object):
     referrer = referer = _req_environ_property('HTTP_REFERER')
     script_name = _req_environ_property('SCRIPT_NAME')
     path_info = _req_environ_property('PATH_INFO')
+    policy = _req_environ_property('POLICY')
     host = _req_environ_property('HTTP_HOST')
     host_url = _host_url_property()
     remote_addr = _req_environ_property('REMOTE_ADDR')

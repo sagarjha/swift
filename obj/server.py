@@ -477,6 +477,7 @@ class ObjectController(object):
         """Handle HTTP GET requests for the Swift Object Server."""
         device, partition, account, container, obj = \
             split_and_validate_path(request, 5, 5, True)
+        print ("Device, partition, account, container, obj are " + device + " " + partition + " " + account + " " + container + " " + obj)
         keep_cache = self.keep_cache_private or (
             'X-Auth-Token' not in request.headers and
             'X-Storage-Token' not in request.headers)

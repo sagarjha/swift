@@ -89,11 +89,15 @@ class AccountReaper(Daemon):
             self.container_ring = Ring(self.swift_dir, ring_name='container')
         return self.container_ring
 
-    def get_object_ring(self):
+    def get_object_ring(self, policy=0):
         """The object :class:`swift.common.ring.Ring` for the cluster."""
+        print ("In function get object ring")
         if not self.object_ring:
-            self.object_ring = Ring(self.swift_dir, ring_name='object')
-        return self.object_ring
+            if policy is not 0:
+                raise exceptions.EmptyRingError('The ring does not'
+                                                ' exist for the given policy')
+            self.object_ring = [Ring(self.swift_dir, ring_name='object')]
+        return self.object_ring[policy]
 
     def run_forever(self, *args, **kwargs):
         """Main entry point when running the reaper in normal daemon mode.
@@ -417,7 +421,8 @@ class AccountReaper(Daemon):
           of the container node dicts.
         """
         container_nodes = list(container_nodes)
-        part, nodes = self.get_object_ring().get_nodes(account, container, obj)
+        policy = 0
+        part, nodes = self.get_object_ring(policy).get_nodes(account, container, obj)
         successes = 0
         failures = 0
         for node in nodes:

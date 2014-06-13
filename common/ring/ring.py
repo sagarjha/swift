@@ -255,8 +255,6 @@ class Ring(object):
         if time() > self._rtime:
             self._reload()
         part = struct.unpack_from('>I', key)[0] >> self._part_shift
-        if obj is not None:
-            return 0
         return part
 
     def get_part_nodes(self, part):
@@ -304,9 +302,6 @@ class Ring(object):
         ======  ===============================================================
         """
         part = self.get_part(account, container, obj)
-        print("in function get_nodes")
-        if obj is not None:
-            part = 0
         return part, self._get_part_nodes(part)
 
     def get_more_nodes(self, part):

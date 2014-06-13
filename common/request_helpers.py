@@ -87,6 +87,7 @@ def split_and_validate_path(request, minsegs=1, maxsegs=None,
     :raises: HTTPBadRequest if something's not okay
     """
     try:
+        print ("in function split_and_validate_path: path is " + request.path)
         segs = split_path(unquote(request.path),
                           minsegs, maxsegs, rest_with_last)
         validate_device_partition(segs[0], segs[1])
