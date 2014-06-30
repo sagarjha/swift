@@ -50,6 +50,7 @@ from swift.common.swob import Request, Response, HeaderKeyDict, Range, \
     HTTPException, HTTPRequestedRangeNotSatisfiable
 from swift.common.request_helpers import strip_sys_meta_prefix, \
     strip_user_meta_prefix, is_user_meta, is_sys_meta, is_sys_or_user_meta
+from swift.common.storage_policy import POLICY_INDEX, POLICY, POLICIES
 
 
 def update_headers(response, headers):
@@ -153,6 +154,9 @@ def headers_to_container_info(headers, status_int=HTTP_OK):
     Construct a cacheable dict of container info based on response headers.
     """
     headers, meta, sysmeta = _prep_headers_to_info(headers, 'container')
+    # assure we have a policy 0 set when the policy header doesn't exist
+    if headers.get(POLICY_INDEX.lower()) is None:
+        headers[POLICY_INDEX.lower()] = '0'
     return {
         'status': status_int,
         'read_acl': headers.get('x-container-read'),
@@ -161,6 +165,7 @@ def headers_to_container_info(headers, status_int=HTTP_OK):
         'object_count': headers.get('x-container-object-count'),
         'bytes': headers.get('x-container-bytes-used'),
         'versions': headers.get('x-versions-location'),
+        'storage_policy': headers.get(POLICY_INDEX.lower()),
         'cors': {
             'allow_origin': meta.get('access-control-allow-origin'),
             'expose_headers': meta.get('access-control-expose-headers'),
@@ -507,7 +512,8 @@ def get_info(app, env, account, container=None, ret_not_found=False,
     path = '/v1/%s' % account
     if container:
         # Stop and check if we have an account?
-        if not get_info(app, env, account):
+        if not get_info(app, env, account) and not account.startswith(
+                getattr(app, 'auto_create_account_prefix', '.')):
             return None
         path += '/' + container
 
@@ -1201,6 +1207,12 @@ class Controller(object):
                                    container, obj, res)
         except ValueError:
             pass
+        # if a backend policy index is present in resp headers, translate it
+        # here with the friendly policy name
+        if POLICY_INDEX in res.headers:
+            policy = POLICIES.get_by_index(res.headers[POLICY_INDEX])
+            if policy:
+                res.headers[POLICY] = policy.name
         return res
 
     def is_origin_allowed(self, cors_info, origin):

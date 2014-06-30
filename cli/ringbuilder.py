@@ -214,11 +214,19 @@ swift-ring-builder <builder_file> create <part_power> <replicas>
     Creates <builder_file> with 2^<part_power> partitions and <replicas>.
     <min_part_hours> is number of hours to restrict moving a partition more
     than once.
+OR
+swift-ring-builder <builder_file> create <part_power> <replicas>
+                                         <min_part_hours> <policy_info_file numRegions maxZones
+    policy_info_file contains the information about the policy
+    numRegions are the number of regions in the cluster and maxZones is the maximum number of zones in any region
         """
         if len(argv) < 6:
             print Commands.create.__doc__.strip()
             exit(EXIT_ERROR)
-        builder = RingBuilder(int(argv[3]), float(argv[4]), int(argv[5]))
+        if len (argv) > 6:
+            builder = RingBuilder(int(argv[3]), float(argv[4]), int(argv[5]), argv[6], int (argv[7]), int (argv[8]))
+        else:
+            builder = RingBuilder(int(argv[3]), float(argv[4]), int(argv[5]))
         backup_dir = pathjoin(dirname(argv[1]), 'backups')
         try:
             mkdir(backup_dir)

@@ -11,6 +11,7 @@
 # under the License.
 
 import os
+import sqlite3
 from datetime import datetime
 
 from swift.common.utils import hash_path, storage_directory
@@ -19,6 +20,7 @@ from swift.common.request_helpers import is_sys_meta, is_user_meta, \
     strip_sys_meta_prefix, strip_user_meta_prefix
 from swift.account.backend import AccountBroker, DATADIR as ABDATADIR
 from swift.container.backend import ContainerBroker, DATADIR as CBDATADIR
+from swift.common.storage_policy import POLICIES
 
 
 class InfoSystemExit(Exception):
@@ -34,7 +36,7 @@ def print_ring_locations(ring, datadir, account, container=None):
 
     :param ring: ring instance
     :param datadir: high level directory to store account/container/objects
-    :param acount: account name
+    :param account: account name
     :param container: container name
     """
     if ring is None or datadir is None or account is None:
@@ -105,9 +107,20 @@ def print_db_info_metadata(db_type, info, metadata):
         print ('  Delete Timestamp: %s (%s)' %
                (datetime.utcfromtimestamp(float(info['delete_timestamp'])),
                 info['delete_timestamp']))
+        print ('  Status Timestamp: %s (%s)' %
+               (datetime.utcfromtimestamp(float(info['status_changed_at'])),
+                info['status_changed_at']))
+        if db_type == 'account':
+            print '  Container Count: %s' % info['container_count']
         print '  Object Count: %s' % info['object_count']
         print '  Bytes Used: %s' % info['bytes_used']
         if db_type == 'container':
+            try:
+                policy_name = POLICIES[info['storage_policy_index']].name
+            except KeyError:
+                policy_name = 'Unknown'
+            print ('  Storage Policy: %s (%s)' % (policy_name,
+                   info['storage_policy_index']))
             print ('  Reported Put Timestamp: %s (%s)' %
                    (datetime.utcfromtimestamp(
                     float(info['reported_put_timestamp'])),
@@ -164,7 +177,14 @@ def print_info(db_type, db_file, swift_dir='/etc/swift'):
     else:
         broker = ContainerBroker(db_file)
         datadir = CBDATADIR
-    info = broker.get_info()
+    try:
+        info = broker.get_info()
+    except sqlite3.OperationalError as err:
+        if 'no such table' in str(err):
+            print "Does not appear to be a DB of type \"%s\": %s" % (
+                db_type, db_file)
+            raise InfoSystemExit()
+        raise
     account = info['account']
     container = info['container'] if db_type == 'container' else None
     print_db_info_metadata(db_type, info, broker.metadata)

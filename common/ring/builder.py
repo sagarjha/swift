@@ -24,6 +24,7 @@ from collections import defaultdict
 from time import time
 
 from swift.common import exceptions
+from swift.common import policy_parser
 from swift.common.ring import RingData
 from swift.common.ring.utils import tiers_for_dev, build_tier_tree
 
@@ -46,7 +47,7 @@ class RingBuilder(object):
     :param min_part_hours: minimum number of hours between partition changes
     """
 
-    def __init__(self, part_power, replicas, min_part_hours):
+    def __init__(self, part_power, replicas, min_part_hours, policy_file=None, numRegions=None, maxZones=None):
         if part_power > 32:
             raise ValueError("part_power must be at most 32 (was %d)"
                              % (part_power,))
@@ -57,6 +58,10 @@ class RingBuilder(object):
             raise ValueError("min_part_hours must be non-negative (was %d)"
                              % (min_part_hours,))
 
+        self.policy_info = None
+        if (policy_file is not None):
+            self.policy_info = policy_parser.policy_parser(policy_file, numRegions, maxZones)
+            print self.policy_info
         self.part_power = part_power
         self.replicas = replicas
         self.min_part_hours = min_part_hours
@@ -126,6 +131,9 @@ class RingBuilder(object):
             self._last_part_moves = builder._last_part_moves
             self._last_part_gather_start = builder._last_part_gather_start
             self._remove_devs = builder._remove_devs
+            self.policy_info = None
+            if hasattr(builder, 'policy_info'):
+                self.policy_info = builder.policy_info
         else:
             self.part_power = builder['part_power']
             self.replicas = builder['replicas']
@@ -139,7 +147,10 @@ class RingBuilder(object):
             self._last_part_moves = builder['_last_part_moves']
             self._last_part_gather_start = builder['_last_part_gather_start']
             self._remove_devs = builder['_remove_devs']
-        self._ring = None
+            self.policy_info = None
+            if 'policy_info' in builder:
+                self.policy_info = builder['policy_info']
+            self._ring = None
 
         # Old builders may not have a region defined for their devices, in
         # which case we default it to 1.
@@ -164,7 +175,8 @@ class RingBuilder(object):
                 '_last_part_moves_epoch': self._last_part_moves_epoch,
                 '_last_part_moves': self._last_part_moves,
                 '_last_part_gather_start': self._last_part_gather_start,
-                '_remove_devs': self._remove_devs}
+                '_remove_devs': self._remove_devs,
+                'policy_info': self.policy_info}
 
     def change_min_part_hours(self, min_part_hours):
         """
@@ -345,11 +357,19 @@ class RingBuilder(object):
         last_balance = 0
         new_parts, removed_part_count = self._adjust_replica2part2dev_size()
         retval += removed_part_count
-        self._reassign_parts(new_parts)
+        # call the new algorithm if policy is provided
+        if self.policy_info is not None:
+            self._reassign_parts_v2(new_parts, self.policy_info)
+        else:
+            self._reassign_parts(new_parts)
         retval += len(new_parts)
         while True:
             reassign_parts = self._gather_reassign_parts()
-            self._reassign_parts(reassign_parts)
+            # call the new algorithm if policy is provided
+            if self.policy_info is not None:
+                self._reassign_parts_v2(reassign_parts, self.policy_info)
+            else:
+                self._reassign_parts(reassign_parts)
             retval += len(reassign_parts)
             while self._remove_devs:
                 self.devs[self._remove_devs.pop()['id']] = None
@@ -594,7 +614,10 @@ class RingBuilder(object):
         self._last_part_moves = array('B', (0 for _junk in xrange(self.parts)))
         self._last_part_moves_epoch = int(time())
 
-        self._reassign_parts(self._adjust_replica2part2dev_size()[0])
+        if self.policy_info is not None:
+            self._reassign_parts_v2(self._adjust_replica2part2dev_size()[0], self.policy_info)
+        else:
+            self._reassign_parts(self._adjust_replica2part2dev_size()[0])
 
     def _update_last_part_moves(self):
         """
@@ -752,6 +775,7 @@ class RingBuilder(object):
                                replicas_to_replace may be shared for multiple
                                partitions, so be sure you do not modify it.
         """
+
         for dev in self._iter_devs():
             dev['sort_key'] = self._sort_key_for(dev)
             dev['tiers'] = tiers_for_dev(dev)
@@ -788,6 +812,8 @@ class RingBuilder(object):
                 new_tiers_list.extend(child_tiers)
             tiers_list = new_tiers_list
             depth += 1
+
+        f = open ('part_replicas_info','w')
 
         for part, replace_replicas in reassign_parts:
             # Gather up what other tiers (regions, zones, ip/ports, and
@@ -847,6 +873,7 @@ class RingBuilder(object):
                                    key=lambda t: (-other_replicas[t],
                                                   tier2sort_key[t]))
                     depth += 1
+                f.write (str (part) + ' ' + str (replica) + ' ' + str (dev['region']) + ' ' + str (dev['zone']) + ' ' + str (dev['id']) + '\n')
                 dev = tier2devs[tier][-1]
                 dev['parts_wanted'] -= 1
                 dev['parts'] += 1
@@ -885,11 +912,223 @@ class RingBuilder(object):
                         new_index, new_last_sort_key)
 
                 self._replica2part2dev[replica][part] = dev['id']
+            f.write('\n')
 
         # Just to save memory and keep from accidental reuse.
         for dev in self._iter_devs():
             del dev['sort_key']
             del dev['tiers']
+
+    def _reassign_parts_v2(self, reassign_parts, policy_info):
+        """
+        For an existing ring data set, partitions are reassigned similarly to
+        the initial assignment. The devices are ordered by how many partitions
+        they still want and kept in that order throughout the process. The
+        gathered partitions are iterated through, assigning them to devices
+        according to the "most wanted" while keeping the replicas as "far
+        apart" as possible. Two different regions are considered the
+        farthest-apart things, followed by zones, then different ip/port pairs
+        within a zone; the least-far-apart things are different devices with
+        the same ip/port pair in the same zone.
+
+        If you want more replicas than devices, you won't get all your
+        replicas.
+
+        :param reassign_parts: An iterable of (part, replicas_to_replace)
+                               pairs. replicas_to_replace is an iterable of the
+                               replica (an int) to replace for that partition.
+                               replicas_to_replace may be shared for multiple
+                               partitions, so be sure you do not modify it.
+        """
+        num_devices_for_replica = [set([])] * int (self.replicas)
+        
+        for dev in self._iter_devs():
+            dev['sort_key'] = self._sort_key_for(dev)
+            dev['tiers'] = tiers_for_dev(dev)
+            for repl in range(0, int (self.replicas)):
+                if dev['region'] in policy_info[repl]['region'] and dev['zone'] in policy_info[repl]['zone']:
+                    num_devices_for_replica[repl].add(dev['id'])
+
+        available_devs = \
+            sorted((d for d in self._iter_devs() if d['weight']),
+                   key=lambda x: x['sort_key'])
+
+        tier2devs = defaultdict(list)
+        tier2sort_key = defaultdict(tuple)
+        tier2dev_sort_key = defaultdict(list)
+        max_tier_depth = 0
+        for dev in available_devs:
+            for tier in dev['tiers']:
+                tier2devs[tier].append(dev)  # <-- starts out sorted!
+                tier2dev_sort_key[tier].append(dev['sort_key'])
+                tier2sort_key[tier] = dev['sort_key']
+                if len(tier) > max_tier_depth:
+                    max_tier_depth = len(tier)
+
+        tier2children_sets = build_tier_tree(available_devs)
+        tier2children = defaultdict(list)
+        tier2children_sort_key = {}
+        tiers_list = [()]
+        depth = 1
+        while depth <= max_tier_depth:
+            new_tiers_list = []
+            for tier in tiers_list:
+                child_tiers = list(tier2children_sets[tier])
+                child_tiers.sort(key=tier2sort_key.__getitem__)
+                tier2children[tier] = child_tiers
+                tier2children_sort_key[tier] = map(
+                    tier2sort_key.__getitem__, child_tiers)
+                new_tiers_list.extend(child_tiers)
+            tiers_list = new_tiers_list
+            depth += 1
+
+        f = open ('part_replicas_info_v2','w')
+        g=open('filter_info', 'w')
+
+        for part, replace_replicas in reassign_parts:
+            # Gather up what other tiers (regions, zones, ip/ports, and
+            # devices) the replicas not-to-be-moved are in for this part.
+            other_replicas = defaultdict(int)
+            unique_tiers_by_tier_len = defaultdict(set)
+            policy_info_copy = policy_info
+            for replica in self._replicas_for_part(part):
+                if replica not in replace_replicas:
+                    dev = self.devs[self._replica2part2dev[replica][part]]
+                    selected_region = dev['region']
+                    selected_zone = dev['zone']
+                    for r in policy_info_copy[replica]['region-inclusion']:
+                        policy_info_copy[r-1]['region'] = set ([selected_region])
+                    for z in policy_info_copy[replica]['zone-inclusion']:
+                        policy_info_copy[z-1]['zone'] = set ([selected_zone])
+                    for r in policy_info_copy[replica]['region-exclusion']:
+                        if selected_region in policy_info_copy[r-1]['region']:
+                            policy_info_copy[r-1]['region'].remove(selected_region)
+                    for z in policy_info_copy[replica]['zone-exclusion']:
+                        if selected_zone in policy_info_copy[z-1]['zone']:
+                            policy_info_copy[z-1]['zone'].remove(selected_zone)
+                    for tier in dev['tiers']:
+                        other_replicas[tier] += 1
+                        unique_tiers_by_tier_len[len(tier)].add(tier)
+
+            replace_replicas=sorted(replace_replicas, key= lambda x: len (num_devices_for_replica[x-1]))
+
+            for replica in replace_replicas:
+                tier = ()
+                depth = 1
+                while depth <= max_tier_depth:
+                    # Order the tiers by how many replicas of this
+                    # partition they already have. Then, of the ones
+                    # with the smallest number of replicas, pick the
+                    # tier with the hungriest drive and then continue
+                    # searching in that subtree.
+                    #
+                    # There are other strategies we could use here,
+                    # such as hungriest-tier (i.e. biggest
+                    # sum-of-parts-wanted) or picking one at random.
+                    # However, hungriest-drive is what was used here
+                    # before, and it worked pretty well in practice.
+                    #
+                    # Note that this allocator will balance things as
+                    # evenly as possible at each level of the device
+                    # layout. If your layout is extremely unbalanced,
+                    # this may produce poor results.
+                    #
+                    # This used to be a cute, recursive function, but it's been
+                    # unrolled for performance.
+
+                    # We sort the tiers here so that, when we look for a tier
+                    # with the lowest number of replicas, the first one we
+                    # find is the one with the hungriest drive (i.e. drive
+                    # with the largest sort_key value). This lets us
+                    # short-circuit the search while still ensuring we get the
+                    # right tier.
+                    children_copy=tier2children[tier]
+                    g.write(str(children_copy) + '\n')
+                    children_copy=self.policy_filter (children_copy, replica, depth, policy_info_copy)
+                    g.write (str(replica)+ ' ' + str(depth) + ' ' + str(policy_info_copy) + '\n')
+                    g.write(str(children_copy) + '\n\n')
+                    # f.write(str(children_copy) + '\n' + str(depth) + '\n\n')
+                    
+                    candidates_with_replicas = \
+                        unique_tiers_by_tier_len[len(tier) + 1]
+                    # Find a tier with the minimal replica count and the
+                    # hungriest drive among all the tiers with the minimal
+                    # replica count.
+                    if len(children_copy) > \
+                            len(candidates_with_replicas):
+                        # There exists at least one tier with 0 other replicas
+                        tier = max((t for t in children_copy
+                                    if other_replicas[t] == 0),
+                                   key=tier2sort_key.__getitem__)
+                    else:
+                        tier = max(children_copy,
+                                   key=lambda t: (-other_replicas[t],
+                                                  tier2sort_key[t]))
+                    depth += 1
+                dev = tier2devs[tier][-1]
+                f.write (str (part) + ' ' + str (replica) + ' ' + str (dev['region']) + ' ' + str (dev['zone']) + ' ' + str (dev['id']) + '\n')
+                selected_region = dev['region']
+                selected_zone = dev['zone']
+                for r in policy_info_copy[replica]['region-inclusion']:
+                    policy_info_copy[r-1]['region'] = set ([selected_region])
+                for z in policy_info_copy[replica]['zone-inclusion']:
+                    policy_info_copy[z-1]['zone'] = set ([selected_zone])
+                for r in policy_info_copy[replica]['region-exclusion']:
+                    if selected_region in policy_info_copy[r-1]['region']:
+                        policy_info_copy[r-1]['region'].remove(selected_region)
+                for z in policy_info_copy[replica]['zone-exclusion']:
+                    if selected_zone in policy_info_copy[z-1]['zone']:
+                        policy_info_copy[z-1]['zone'].remove(selected_zone)
+                dev['parts_wanted'] -= 1
+                dev['parts'] += 1
+                old_sort_key = dev['sort_key']
+                new_sort_key = dev['sort_key'] = self._sort_key_for(dev)
+                for tier in dev['tiers']:
+                    other_replicas[tier] += 1
+                    unique_tiers_by_tier_len[len(tier)].add(tier)
+
+                    index = bisect.bisect_left(tier2dev_sort_key[tier],
+                                               old_sort_key)
+                    tier2devs[tier].pop(index)
+                    tier2dev_sort_key[tier].pop(index)
+
+                    new_index = bisect.bisect_left(tier2dev_sort_key[tier],
+                                                   new_sort_key)
+                    tier2devs[tier].insert(new_index, dev)
+                    tier2dev_sort_key[tier].insert(new_index, new_sort_key)
+
+                    new_last_sort_key = tier2dev_sort_key[tier][-1]
+                    tier2sort_key[tier] = new_last_sort_key
+
+                    # Now jiggle tier2children values to keep them sorted
+                    parent_tier = tier[0:-1]
+                    index = bisect.bisect_left(
+                        tier2children_sort_key[parent_tier],
+                        old_sort_key)
+                    popped = tier2children[parent_tier].pop(index)
+                    tier2children_sort_key[parent_tier].pop(index)
+
+                    new_index = bisect.bisect_left(
+                        tier2children_sort_key[parent_tier],
+                        new_last_sort_key)
+                    tier2children[parent_tier].insert(new_index, popped)
+                    tier2children_sort_key[parent_tier].insert(
+                        new_index, new_last_sort_key)
+
+                self._replica2part2dev[replica][part] = dev['id']
+            f.write('\n')
+        # Just to save memory and keep from accidental reuse.
+        for dev in self._iter_devs():
+            del dev['sort_key']
+            del dev['tiers']
+
+    def policy_filter (self, arr, replica, depth, policy_info_copy):
+        if depth is 1:
+            return filter (lambda x: x[0] in policy_info_copy[replica]['region'], arr)
+        if depth is 2:
+            return filter (lambda x: x[1] in policy_info_copy[replica]['zone'], arr)
+        return arr
+        
 
     def _sort_key_for(self, dev):
         return (dev['parts_wanted'], random.randint(0, 0xFFFF), dev['id'])

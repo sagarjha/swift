@@ -209,13 +209,13 @@ class DatabaseBroker(object):
 
     def __str__(self):
         """
-        Returns a string indentifying the entity under broker to a human.
+        Returns a string identifying the entity under broker to a human.
         The baseline implementation returns a full pathname to a database.
         This is vital for useful diagnostics.
         """
         return self.db_file
 
-    def initialize(self, put_timestamp=None):
+    def initialize(self, put_timestamp=None, *_initialize_args):
         """
         Create the DB
 
@@ -277,7 +277,7 @@ class DatabaseBroker(object):
         """)
         if not put_timestamp:
             put_timestamp = normalize_timestamp(0)
-        self._initialize(conn, put_timestamp)
+        self._initialize(conn, put_timestamp, *_initialize_args)
         conn.commit()
         if tmp_db_file:
             conn.close()

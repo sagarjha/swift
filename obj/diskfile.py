@@ -26,7 +26,7 @@ classes. An example alternative implementation can be found in the
 The `DiskFileManager` is a reference implemenation specific class and is not
 part of the backend API.
 
-The remaining methods in this module are considered implementation specifc and
+The remaining methods in this module are considered implementation specific and
 are also not considered part of the backend API.
 """
 
@@ -58,7 +58,8 @@ from swift.common.exceptions import DiskFileQuarantined, DiskFileNotExist, \
     DiskFileDeleted, DiskFileError, DiskFileNotOpen, PathNotDir, \
     ReplicationLockTimeout, DiskFileExpired
 from swift.common.swob import multi_range_iterator
-
+from swift.common.storage_policy import get_policy_string
+from functools import partial
 
 PICKLE_PROTOCOL = 2
 ONE_WEEK = 604800
@@ -67,8 +68,10 @@ METADATA_KEY = 'user.swift.metadata'
 # These are system-set metadata keys that cannot be changed with a POST.
 # They should be lowercase.
 DATAFILE_SYSTEM_META = set('content-length content-type deleted etag'.split())
-DATADIR = 'objects'
-ASYNCDIR = 'async_pending'
+DATADIR_BASE = 'objects'
+ASYNCDIR_BASE = 'async_pending'
+get_data_dir = partial(get_policy_string, DATADIR_BASE)
+get_async_dir = partial(get_policy_string, ASYNCDIR_BASE)
 
 
 def read_metadata(fd):
@@ -384,27 +387,40 @@ def object_audit_location_generator(devices, mount_check=True, logger=None,
                 logger.debug(
                     _('Skipping %s as it is not mounted'), device)
             continue
-        datadir_path = os.path.join(devices, device, DATADIR)
-        partitions = listdir(datadir_path)
-        for partition in partitions:
-            part_path = os.path.join(datadir_path, partition)
+        # loop through object dirs for all policies
+        for dir in [dir for dir in os.listdir(os.path.join(devices, device))
+                    if dir.startswith(DATADIR_BASE)]:
+            datadir_path = os.path.join(devices, device, dir)
+            # warn if the object dir doesn't match with a policy
+            policy_idx = 0
+            if '-' in dir:
+                base, policy_idx = dir.split('-', 1)
             try:
-                suffixes = listdir(part_path)
-            except OSError as e:
-                if e.errno != errno.ENOTDIR:
-                    raise
-                continue
-            for asuffix in suffixes:
-                suff_path = os.path.join(part_path, asuffix)
+                get_data_dir(policy_idx)
+            except ValueError:
+                if logger:
+                    logger.warn(_('Directory %s does not map to a '
+                                  'valid policy') % dir)
+            partitions = listdir(datadir_path)
+            for partition in partitions:
+                part_path = os.path.join(datadir_path, partition)
                 try:
-                    hashes = listdir(suff_path)
+                    suffixes = listdir(part_path)
                 except OSError as e:
                     if e.errno != errno.ENOTDIR:
                         raise
                     continue
-                for hsh in hashes:
-                    hsh_path = os.path.join(suff_path, hsh)
-                    yield AuditLocation(hsh_path, device, partition)
+                for asuffix in suffixes:
+                    suff_path = os.path.join(part_path, asuffix)
+                    try:
+                        hashes = listdir(suff_path)
+                    except OSError as e:
+                        if e.errno != errno.ENOTDIR:
+                            raise
+                        continue
+                    for hsh in hashes:
+                        hsh_path = os.path.join(suff_path, hsh)
+                        yield AuditLocation(hsh_path, device, partition)
 
 
 class DiskFileManager(object):
@@ -492,9 +508,9 @@ class DiskFileManager(object):
             yield True
 
     def pickle_async_update(self, device, account, container, obj, data,
-                            timestamp):
+                            timestamp, policy_idx):
         device_path = self.construct_dev_path(device)
-        async_dir = os.path.join(device_path, ASYNCDIR)
+        async_dir = os.path.join(device_path, get_async_dir(policy_idx))
         ohash = hash_path(account, container, obj)
         self.threadpools[device].run_in_thread(
             write_pickle,
@@ -505,12 +521,13 @@ class DiskFileManager(object):
         self.logger.increment('async_pendings')
 
     def get_diskfile(self, device, partition, account, container, obj,
-                     **kwargs):
+                     policy_idx=0, **kwargs):
         dev_path = self.get_dev_path(device)
         if not dev_path:
             raise DiskFileDeviceUnavailable()
         return DiskFile(self, dev_path, self.threadpools[device],
-                        partition, account, container, obj, **kwargs)
+                        partition, account, container, obj,
+                        policy_idx=policy_idx, **kwargs)
 
     def object_audit_location_generator(self, device_dirs=None):
         return object_audit_location_generator(self.devices, self.mount_check,
@@ -522,7 +539,8 @@ class DiskFileManager(object):
             self, audit_location.path, dev_path,
             audit_location.partition)
 
-    def get_diskfile_from_hash(self, device, partition, object_hash, **kwargs):
+    def get_diskfile_from_hash(self, device, partition, object_hash,
+                               policy_idx, **kwargs):
         """
         Returns a DiskFile instance for an object at the given
         object_hash. Just in case someone thinks of refactoring, be
@@ -536,7 +554,8 @@ class DiskFileManager(object):
         if not dev_path:
             raise DiskFileDeviceUnavailable()
         object_path = os.path.join(
-            dev_path, DATADIR, partition, object_hash[-3:], object_hash)
+            dev_path, get_data_dir(policy_idx), partition, object_hash[-3:],
+            object_hash)
         try:
             filenames = hash_cleanup_listdir(object_path, self.reclaim_age)
         except OSError as err:
@@ -561,13 +580,15 @@ class DiskFileManager(object):
         except ValueError:
             raise DiskFileNotExist()
         return DiskFile(self, dev_path, self.threadpools[device],
-                        partition, account, container, obj, **kwargs)
+                        partition, account, container, obj,
+                        policy_idx=policy_idx, **kwargs)
 
-    def get_hashes(self, device, partition, suffix):
+    def get_hashes(self, device, partition, suffix, policy_idx):
         dev_path = self.get_dev_path(device)
         if not dev_path:
             raise DiskFileDeviceUnavailable()
-        partition_path = os.path.join(dev_path, DATADIR, partition)
+        partition_path = os.path.join(dev_path, get_data_dir(policy_idx),
+                                      partition)
         if not os.path.exists(partition_path):
             mkdirs(partition_path)
         suffixes = suffix.split('-') if suffix else []
@@ -585,7 +606,7 @@ class DiskFileManager(object):
                     path, err)
         return []
 
-    def yield_suffixes(self, device, partition):
+    def yield_suffixes(self, device, partition, policy_idx):
         """
         Yields tuples of (full_path, suffix_only) for suffixes stored
         on the given device and partition.
@@ -593,7 +614,8 @@ class DiskFileManager(object):
         dev_path = self.get_dev_path(device)
         if not dev_path:
             raise DiskFileDeviceUnavailable()
-        partition_path = os.path.join(dev_path, DATADIR, partition)
+        partition_path = os.path.join(dev_path, get_data_dir(policy_idx),
+                                      partition)
         for suffix in self._listdir(partition_path):
             if len(suffix) != 3:
                 continue
@@ -603,7 +625,7 @@ class DiskFileManager(object):
                 continue
             yield (os.path.join(partition_path, suffix), suffix)
 
-    def yield_hashes(self, device, partition, suffixes=None):
+    def yield_hashes(self, device, partition, policy_idx, suffixes=None):
         """
         Yields tuples of (full_path, hash_only, timestamp) for object
         information stored for the given device, partition, and
@@ -616,9 +638,10 @@ class DiskFileManager(object):
         if not dev_path:
             raise DiskFileDeviceUnavailable()
         if suffixes is None:
-            suffixes = self.yield_suffixes(device, partition)
+            suffixes = self.yield_suffixes(device, partition, policy_idx)
         else:
-            partition_path = os.path.join(dev_path, DATADIR, partition)
+            partition_path = os.path.join(dev_path, get_data_dir(policy_idx),
+                                          partition)
             suffixes = (
                 (os.path.join(partition_path, suffix), suffix)
                 for suffix in suffixes)
@@ -935,10 +958,13 @@ class DiskFile(object):
     :param account: account name for the object
     :param container: container name for the object
     :param obj: object name for the object
+    :param _datadir: override the full datadir otherwise constructed here
+    :param policy_idx: used to get the data dir when contructing it here
     """
 
     def __init__(self, mgr, device_path, threadpool, partition,
-                 account=None, container=None, obj=None, _datadir=None):
+                 account=None, container=None, obj=None, _datadir=None,
+                 policy_idx=0):
         self._mgr = mgr
         self._device_path = device_path
         self._threadpool = threadpool or ThreadPool(nthreads=0)
@@ -952,7 +978,8 @@ class DiskFile(object):
             self._obj = obj
             name_hash = hash_path(account, container, obj)
             self._datadir = join(
-                device_path, storage_directory(DATADIR, partition, name_hash))
+                device_path, storage_directory(get_data_dir(policy_idx),
+                                               partition, name_hash))
         else:
             # gets populated when we read the metadata
             self._name = None
@@ -971,7 +998,8 @@ class DiskFile(object):
         else:
             name_hash = hash_path(account, container, obj)
             self._datadir = join(
-                device_path, storage_directory(DATADIR, partition, name_hash))
+                device_path, storage_directory(get_data_dir(policy_idx),
+                                               partition, name_hash))
 
     @property
     def account(self):

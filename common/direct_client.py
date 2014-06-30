@@ -73,7 +73,7 @@ def _get_direct_account_container(path, stype, node, part,
             http_host=node['ip'], http_port=node['port'],
             http_device=node['device'], http_status=resp.status,
             http_reason=resp.reason)
-    resp_headers = {}
+    resp_headers = HeaderKeyDict()
     for header, value in resp.getheaders():
         resp_headers[header.lower()] = value
     if resp.status == HTTP_NO_CONTENT:
@@ -115,6 +115,29 @@ def direct_get_account(node, part, account, marker=None, limit=None,
                                          delimiter=None,
                                          conn_timeout=5,
                                          response_timeout=15)
+
+
+def direct_delete_account(node, part, account, conn_timeout=5,
+                          response_timeout=15, headers=None):
+    if headers is None:
+        headers = {}
+
+    path = '/%s' % account
+    with Timeout(conn_timeout):
+        conn = http_connect(node['ip'], node['port'], node['device'], part,
+                            'DELETE', path,
+                            headers=gen_headers(headers, True))
+    with Timeout(response_timeout):
+        resp = conn.getresponse()
+        resp.read()
+    if not is_success(resp.status):
+        raise ClientException(
+            'Account server %s:%s direct DELETE %s gave status %s' %
+            (node['ip'], node['port'],
+             repr('/%s/%s%s' % (node['device'], part, path)), resp.status),
+            http_host=node['ip'], http_port=node['port'],
+            http_device=node['device'], http_status=resp.status,
+            http_reason=resp.reason)
 
 
 def direct_head_container(node, part, account, container, conn_timeout=5,
@@ -205,7 +228,7 @@ def direct_delete_container(node, part, account, container, conn_timeout=5,
 
 
 def direct_head_object(node, part, account, container, obj, conn_timeout=5,
-                       response_timeout=15):
+                       response_timeout=15, headers=None):
     """
     Request object information directly from the object server.
 
@@ -216,13 +239,14 @@ def direct_head_object(node, part, account, container, obj, conn_timeout=5,
     :param obj: object name
     :param conn_timeout: timeout in seconds for establishing the connection
     :param response_timeout: timeout in seconds for getting the response
+    :param headers: dict to be passed into HTTPConnection headers
     :returns: a dict containing the response's headers (all header names will
               be lowercase)
     """
     path = '/%s/%s/%s' % (account, container, obj)
     with Timeout(conn_timeout):
         conn = http_connect(node['ip'], node['port'], node['device'], part,
-                            'HEAD', path, headers=gen_headers())
+                            'HEAD', path, headers=gen_headers(headers))
     with Timeout(response_timeout):
         resp = conn.getresponse()
         resp.read()
