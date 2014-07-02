@@ -37,6 +37,7 @@ from swift.common.http import HTTP_OK, HTTP_INSUFFICIENT_STORAGE
 from swift.obj import ssync_sender
 from swift.obj.diskfile import DiskFileManager, get_hashes, get_data_dir
 from swift.common.storage_policy import POLICY_INDEX, POLICIES
+from swift.common.crypt import encryption, decryption
 
 
 hubs.use_hub(get_hub())
@@ -234,6 +235,9 @@ class ObjectReplicator(Daemon):
             suffixes = tpool.execute(tpool_get_suffixes, job['path'])
             if suffixes:
                 for node in job['nodes']:
+                    print str(node)
+                    print str(job)
+                    print str(suffixes)
                     success = self.sync(node, job, suffixes)
                     if success:
                         with Timeout(self.http_timeout):
@@ -319,6 +323,9 @@ class ObjectReplicator(Daemon):
                     suffixes = [suffix for suffix in local_hash if
                                 local_hash[suffix] !=
                                 remote_hash.get(suffix, -1)]
+                    print str(node)
+                    print str(job)
+                    print str(suffixes)
                     self.sync(node, job, suffixes)
                     with Timeout(self.http_timeout):
                         conn = http_connect(
@@ -510,8 +517,10 @@ class ObjectReplicator(Daemon):
                                        "current replication pass."))
                     return
                 if job['delete']:
+                    print job
                     self.run_pool.spawn(self.update_deleted, job)
                 else:
+                    print job
                     self.run_pool.spawn(self.update, job)
             with Timeout(self.lockup_timeout):
                 self.run_pool.waitall()

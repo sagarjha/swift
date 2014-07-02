@@ -37,7 +37,6 @@ class RingData(object):
         self.devs = devs
         self._replica2part2dev_id = replica2part2dev_id
         self._part_shift = part_shift
-
         for dev in self.devs:
             if dev is not None:
                 dev.setdefault("region", 1)
@@ -423,3 +422,4 @@ class Ring(object):
                         if len(used) == self._num_devs:
                             hit_all_devs = True
                             break
+
