@@ -216,7 +216,7 @@ swift-ring-builder <builder_file> create <part_power> <replicas>
     than once.
 OR
 swift-ring-builder <builder_file> create <part_power> <replicas>
-                                         <min_part_hours> <policy_info_file numRegions maxZones
+                                         <min_part_hours> <policy_info_file> <numRegions> <maxZones>
     policy_info_file contains the information about the policy
     numRegions are the number of regions in the cluster and maxZones is the maximum number of zones in any region
         """
