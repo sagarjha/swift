@@ -155,6 +155,9 @@ def check_object_creation(req, object_name):
     :returns HTTPBadRequest: missing or bad content-type header, or
                              bad metadata
     """
+
+    print 'req.content_length is ' + str (req.content_length)
+    
     if req.content_length and req.content_length > MAX_FILE_SIZE:
         return HTTPRequestEntityTooLarge(body='Your request is too large.',
                                          request=req,

@@ -41,7 +41,7 @@ from swift.common.utils import ContextPool, normalize_timestamp, \
 from swift.common.bufferedhttp import http_connect
 from swift.common.constraints import check_metadata, check_object_creation, \
     check_copy_from_header
-from swift.common import constraints
+from swift.common import constraints, crypt
 from swift.common.exceptions import ChunkReadTimeout, \
     ChunkWriteTimeout, ConnectionTimeout, ListingIterNotFound, \
     ListingIterNotAuthorized, ListingIterError
@@ -57,7 +57,6 @@ from swift.common.swob import HTTPAccepted, HTTPBadRequest, HTTPNotFound, \
     HTTPClientDisconnect, HTTPNotImplemented
 from swift.common.storage_policy import POLICY_INDEX
 from swift.common.request_helpers import is_user_meta
-
 
 def copy_headers_into(from_r, to_r):
     """
@@ -192,6 +191,7 @@ class ObjectController(Controller):
 
     def GETorHEAD(self, req):
         """Handle HTTP GET or HEAD requests."""
+        print 'in function GETorHEAD'
         container_info = self.container_info(
             self.account_name, self.container_name, req)
         req.acl = container_info['read_acl']
@@ -358,8 +358,23 @@ class ObjectController(Controller):
 
     def _send_file(self, conn, path):
         """Method for a file PUT coro"""
+        print 'path = ' + path
         while True:
             chunk = conn.queue.get()
+            print
+            print
+            print 'sending chunk = '
+            print
+            print chunk
+            print
+            print
+            print crypt.key
+
+            chunk = crypt.xor_crypt_string (chunk, crypt.key)
+            print chunk
+            print
+            print
+            
             if not conn.failed:
                 try:
                     with ChunkWriteTimeout(self.app.node_timeout):
@@ -377,6 +392,7 @@ class ObjectController(Controller):
         self.app.logger.thread_locals = logger_thread_locals
         for node in nodes:
             try:
+                print 'ip of node is = ' + node['ip']
                 start_time = time.time()
                 with ConnectionTimeout(self.app.conn_timeout):
                     conn = http_connect(
@@ -454,6 +470,7 @@ class ObjectController(Controller):
     @delay_denial
     def PUT(self, req):
         """HTTP PUT request handler."""
+        print 'in function PUT'
         if req.if_none_match is not None and '*' not in req.if_none_match:
             # Sending an etag with if-none-match isn't currently supported
             return HTTPBadRequest(request=req, content_type='text/plain',

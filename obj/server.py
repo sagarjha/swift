@@ -365,6 +365,7 @@ class ObjectController(object):
     @timing_stats()
     def PUT(self, request):
         """Handle HTTP PUT requests for the Swift Object Server."""
+        print 'request is ' + str(request)
         device, partition, account, container, obj, policy_idx = \
             get_name_and_placement(request, 5, 5, True)
         if 'x-timestamp' not in request.headers or \
@@ -416,11 +417,13 @@ class ObjectController(object):
 
                 def timeout_reader():
                     with ChunkReadTimeout(self.client_timeout):
+                        print 'reading ' + str (self.network_chunk_size) + ' bytes'
                         return request.environ['wsgi.input'].read(
                             self.network_chunk_size)
 
                 try:
                     for chunk in iter(lambda: timeout_reader(), ''):
+                        print 'chunk from timeout_reader is ' + chunk
                         start_time = time.time()
                         if start_time > upload_expiration:
                             self.logger.increment('PUT.timeouts')

@@ -7,3 +7,4 @@ rsync -r --exclude '*.sh' --exclude '*~' --exclude '*git' --exclude 'TAGS' . roo
 rsync -r --exclude '*.sh' --exclude '*~' --exclude '*git' --exclude 'TAGS' . root@9.126.113.11:/usr/share/pyshared/swift &
 rsync -r --exclude '*.sh' --exclude '*~' --exclude '*git' --exclude 'TAGS' . root@9.126.113.158:/usr/share/pyshared/swift &
 rsync -r --exclude '*.sh' --exclude '*~' --exclude '*git' --exclude 'TAGS' . root@9.126.113.163:/usr/share/pyshared/swift &
+wait

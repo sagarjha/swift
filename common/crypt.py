@@ -6,13 +6,17 @@ import base64
 # os is for urandom, which is an accepted producer of randomness that
 # is suitable for cryptology.
 import os
+from itertools import izip, cycle
+
+
+key = '\xb9\x1d\xb5\xb9\xc3\xad\xdb\xb3?\xc0\xd7M\x8c\x8c\xe8e'
 
 #32 bytes = 256 bits
 #16 = 128 bits
 # the block size for cipher obj, can be 16 24 or 32. 16 matches 128 bit.
 BLOCK_SIZE = 16
 
-def encryption(privateInfo, key):
+def AES_encryption(privateInfo, key):
 
     
     # the character used for padding
@@ -36,10 +40,18 @@ def encryption(privateInfo, key):
     
     # encodes you private info!
     encoded = EncodeAES(cipher, privateInfo)
+
+    print 'in function encryption'
+    print
+    print encoded
+    print
+    print key
+    print
+    
     # print 'Encrypted string:', encoded
     return encoded
 
-def decryption(encryptedString, key):
+def DES_decryption(encryptedString, key):
 
     PADDING = '{'
     DecodeAES = lambda c, e: c.decrypt(base64.b64decode(e)).rstrip(PADDING)
@@ -51,3 +63,5 @@ def decryption(encryptedString, key):
     # print decoded
     return decoded
 
+def xor_crypt_string(data, key):
+    return ''.join(chr(ord(x) ^ ord(y)) for (x,y) in izip(data, cycle(key)))
