@@ -33,21 +33,12 @@ def AES_encryption(privateInfo, key):
     # encrypt with AES, encode with base64
     EncodeAES = lambda c, s: base64.b64encode(c.encrypt(pad(s)))
     
-    # print 'encryption key:',secret
-    
     # creates the cipher obj using the key
     cipher = AES.new(key)
     
     # encodes you private info!
     encoded = EncodeAES(cipher, privateInfo)
 
-    print 'in function encryption'
-    print
-    print encoded
-    print
-    print key
-    print
-    
     # print 'Encrypted string:', encoded
     return encoded
 
@@ -60,7 +51,6 @@ def DES_decryption(encryptedString, key):
     encryption = encryptedString
     cipher = AES.new(key)
     decoded = DecodeAES(cipher, encryption)
-    # print decoded
     return decoded
 
 def xor_crypt_string(data, key):

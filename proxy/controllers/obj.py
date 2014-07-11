@@ -191,7 +191,6 @@ class ObjectController(Controller):
 
     def GETorHEAD(self, req):
         """Handle HTTP GET or HEAD requests."""
-        print 'in function GETorHEAD'
         container_info = self.container_info(
             self.account_name, self.container_name, req)
         req.acl = container_info['read_acl']
@@ -356,25 +355,12 @@ class ObjectController(Controller):
 
         return headers
 
-    def _send_file(self, conn, path):
+    def _send_file(self, conn, path, encryption):
         """Method for a file PUT coro"""
-        print 'path = ' + path
         while True:
             chunk = conn.queue.get()
-            print
-            print
-            print 'sending chunk = '
-            print
-            print chunk
-            print
-            print
-            print crypt.key
-
-            chunk = crypt.xor_crypt_string (chunk, crypt.key)
-            print chunk
-            print
-            print
-            
+            if encryption is True:
+                chunk = crypt.xor_crypt_string (chunk, crypt.key)
             if not conn.failed:
                 try:
                     with ChunkWriteTimeout(self.app.node_timeout):
@@ -392,7 +378,6 @@ class ObjectController(Controller):
         self.app.logger.thread_locals = logger_thread_locals
         for node in nodes:
             try:
-                print 'ip of node is = ' + node['ip']
                 start_time = time.time()
                 with ConnectionTimeout(self.app.conn_timeout):
                     conn = http_connect(
@@ -470,7 +455,6 @@ class ObjectController(Controller):
     @delay_denial
     def PUT(self, req):
         """HTTP PUT request handler."""
-        print 'in function PUT'
         if req.if_none_match is not None and '*' not in req.if_none_match:
             # Sending an etag with if-none-match isn't currently supported
             return HTTPBadRequest(request=req, content_type='text/plain',
@@ -722,7 +706,10 @@ class ObjectController(Controller):
                 for conn in conns:
                     conn.failed = False
                     conn.queue = Queue(self.app.put_queue_depth)
-                    pool.spawn(self._send_file, conn, req.path)
+                    if True in obj_ring.encrypted:
+                        pool.spawn(self._send_file, conn, req.path, True)
+                    else:
+                        pool.spawn(self._send_file, conn, req.path, False)
                 while True:
                     with ChunkReadTimeout(self.app.client_timeout):
                         try:

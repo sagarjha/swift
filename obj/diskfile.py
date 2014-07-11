@@ -707,11 +707,6 @@ class DiskFileWriter(object):
         :returns: the total number of bytes written to an object
         """
 
-        print 'writing chunk ='
-        print chunk
-        print
-        print
-
         def _write_entire_chunk(chunk):
             while chunk:
                 written = os.write(self._fd, chunk)

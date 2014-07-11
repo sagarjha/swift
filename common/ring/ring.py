@@ -33,10 +33,11 @@ from swift.common.ring.utils import tiers_for_dev
 class RingData(object):
     """Partitioned consistent hashing ring data (used for serialization)."""
 
-    def __init__(self, replica2part2dev_id, devs, part_shift):
+    def __init__(self, replica2part2dev_id, devs, part_shift, encrypted):
         self.devs = devs
         self._replica2part2dev_id = replica2part2dev_id
         self._part_shift = part_shift
+        self.encrypted = encrypted
         for dev in self.devs:
             if dev is not None:
                 dev.setdefault("region", 1)
@@ -79,7 +80,7 @@ class RingData(object):
             ring_data = pickle.load(gz_file)
         if not hasattr(ring_data, 'devs'):
             ring_data = RingData(ring_data['replica2part2dev_id'],
-                                 ring_data['devs'], ring_data['part_shift'])
+                                 ring_data['devs'], ring_data['part_shift'], ring_data['encrypted'])
         return ring_data
 
     def serialize_v1(self, file_obj):
@@ -89,7 +90,8 @@ class RingData(object):
         json_encoder = json.JSONEncoder(sort_keys=True)
         json_text = json_encoder.encode(
             {'devs': ring['devs'], 'part_shift': ring['part_shift'],
-             'replica_count': len(ring['replica2part2dev_id'])})
+             'replica_count': len(ring['replica2part2dev_id']),
+             'encrypted': self.encrypted})
         json_len = len(json_text)
         file_obj.write(struct.pack('!I', json_len))
         file_obj.write(json_text)
@@ -127,7 +129,8 @@ class RingData(object):
     def to_dict(self):
         return {'devs': self.devs,
                 'replica2part2dev_id': self._replica2part2dev_id,
-                'part_shift': self._part_shift}
+                'part_shift': self._part_shift,
+                'encrypted': self.encrypted}
 
 
 class Ring(object):
@@ -172,6 +175,7 @@ class Ring(object):
             self._replica2part2dev_id = ring_data._replica2part2dev_id
             self._part_shift = ring_data._part_shift
             self._rebuild_tier_data()
+            self.encrypted = ring_data.encrypted
 
             # Do this now, when we know the data has changed, rather than
             # doing it on every call to get_more_nodes().

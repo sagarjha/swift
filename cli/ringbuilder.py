@@ -216,15 +216,14 @@ swift-ring-builder <builder_file> create <part_power> <replicas>
     than once.
 OR
 swift-ring-builder <builder_file> create <part_power> <replicas>
-                                         <min_part_hours> <policy_info_file> <numRegions> <maxZones>
+                                         <min_part_hours> <policy_info_file>
     policy_info_file contains the information about the policy
-    numRegions are the number of regions in the cluster and maxZones is the maximum number of zones in any region
         """
         if len(argv) < 6:
             print Commands.create.__doc__.strip()
             exit(EXIT_ERROR)
         if len (argv) > 6:
-            builder = RingBuilder(int(argv[3]), float(argv[4]), int(argv[5]), argv[6], int (argv[7]), int (argv[8]))
+            builder = RingBuilder(int(argv[3]), float(argv[4]), int(argv[5]), argv[6])
         else:
             builder = RingBuilder(int(argv[3]), float(argv[4]), int(argv[5]))
         backup_dir = pathjoin(dirname(argv[1]), 'backups')

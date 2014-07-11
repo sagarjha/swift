@@ -25,6 +25,7 @@ from time import time
 
 from swift.common import exceptions
 from swift.common import policy_parser
+from swift.common.boolean_expression_parser import evaluate, three_valued_and
 from swift.common.ring import RingData
 from swift.common.ring.utils import tiers_for_dev, build_tier_tree
 
@@ -47,7 +48,7 @@ class RingBuilder(object):
     :param min_part_hours: minimum number of hours between partition changes
     """
 
-    def __init__(self, part_power, replicas, min_part_hours, policy_file=None, numRegions=None, maxZones=None):
+    def __init__(self, part_power, replicas, min_part_hours, policy_file=None):
         if part_power > 32:
             raise ValueError("part_power must be at most 32 (was %d)"
                              % (part_power,))
@@ -59,9 +60,11 @@ class RingBuilder(object):
                              % (min_part_hours,))
 
         self.policy_info = None
+        self.encrypted = [False] * int (replicas)
         if (policy_file is not None):
-            self.policy_info = policy_parser.policy_parser(policy_file, numRegions, maxZones)
-            print self.policy_info
+            self.policy_info = policy_parser.policy_parser(policy_file)
+            for i in range(0, int (replicas)):
+                self.encrypted[i] = self.policy_info[i]['encrypted']
         self.part_power = part_power
         self.replicas = replicas
         self.min_part_hours = min_part_hours
@@ -132,6 +135,8 @@ class RingBuilder(object):
             self._last_part_gather_start = builder._last_part_gather_start
             self._remove_devs = builder._remove_devs
             self.policy_info = None
+            if hasattr(builder, 'encrypted'):
+                self.encrypted = builder.encrypted
             if hasattr(builder, 'policy_info'):
                 self.policy_info = builder.policy_info
         else:
@@ -148,6 +153,8 @@ class RingBuilder(object):
             self._last_part_gather_start = builder['_last_part_gather_start']
             self._remove_devs = builder['_remove_devs']
             self.policy_info = None
+            if 'encrypted' in builder:
+                self.encrypted = builder['encrypted']
             if 'policy_info' in builder:
                 self.policy_info = builder['policy_info']
             self._ring = None
@@ -176,7 +183,8 @@ class RingBuilder(object):
                 '_last_part_moves': self._last_part_moves,
                 '_last_part_gather_start': self._last_part_gather_start,
                 '_remove_devs': self._remove_devs,
-                'policy_info': self.policy_info}
+                'policy_info': self.policy_info,
+                'encrypted': self.encrypted}
 
     def change_min_part_hours(self, min_part_hours):
         """
@@ -235,20 +243,20 @@ class RingBuilder(object):
             # int).
             if self.policy_info is None:
                 if not self._replica2part2dev:
-                    self._ring = RingData([], devs, 32 - self.part_power)
+                    self._ring = RingData([], devs, 32 - self.part_power, self.encrypted)
                 else:
                     self._ring = \
                             RingData([array('H', p2d) for p2d in
-                                  self._replica2part2dev],
-                                 devs, 32 - self.part_power)
+                                      self._replica2part2dev],
+                                     devs, 32 - self.part_power, self.encrypted)
             else:
                 if not self._replica2part2dev:
-                    self._ring = RingData([], devs, 32 - self.part_power)
+                    self._ring = RingData([], devs, 32 - self.part_power, self.encrypted)
                 else:
                     self._ring = \
                         RingData([array('H', p2d) for p2d in
                                   self._replica2part2dev],
-                                 devs, 32 - self.part_power)
+                                 devs, 32 - self.part_power, self.encrypted)
         return self._ring
 
     def add_dev(self, dev):
@@ -949,14 +957,12 @@ class RingBuilder(object):
                                replicas_to_replace may be shared for multiple
                                partitions, so be sure you do not modify it.
         """
-        num_devices_for_replica = [set([])] * int (self.replicas)
+
+        num_devices_for_replica = [0] * int (self.replicas)
         
         for dev in self._iter_devs():
             dev['sort_key'] = self._sort_key_for(dev)
             dev['tiers'] = tiers_for_dev(dev)
-            for repl in range(0, int (self.replicas)):
-                if dev['region'] in policy_info[repl]['region'] and dev['zone'] in policy_info[repl]['zone']:
-                    num_devices_for_replica[repl].add(dev['id'])
 
         available_devs = \
             sorted((d for d in self._iter_devs() if d['weight']),
@@ -999,28 +1005,16 @@ class RingBuilder(object):
             # devices) the replicas not-to-be-moved are in for this part.
             other_replicas = defaultdict(int)
             unique_tiers_by_tier_len = defaultdict(set)
-            policy_info_copy = policy_info
+            assigned_replicas_region = {}
+            assigned_replicas_zone = {}            
             for replica in self._replicas_for_part(part):
                 if replica not in replace_replicas:
-                    dev = self.devs[self._replica2part2dev[replica][part]]
-                    selected_region = dev['region']
-                    selected_zone = dev['zone']
-                    for r in policy_info_copy[replica]['region-inclusion']:
-                        policy_info_copy[r-1]['region'] = set ([selected_region])
-                    for z in policy_info_copy[replica]['zone-inclusion']:
-                        policy_info_copy[z-1]['zone'] = set ([selected_zone])
-                    for r in policy_info_copy[replica]['region-exclusion']:
-                        if selected_region in policy_info_copy[r-1]['region']:
-                            policy_info_copy[r-1]['region'].remove(selected_region)
-                    for z in policy_info_copy[replica]['zone-exclusion']:
-                        if selected_zone in policy_info_copy[z-1]['zone']:
-                            policy_info_copy[z-1]['zone'].remove(selected_zone)
+                    assigned_replicas_region[replica] = self._replica2part2dev[replica][part]['region']
+                    assigned_replicas_zone[replica] = self._replica2part2dev[replica][part]['zone']
                     for tier in dev['tiers']:
                         other_replicas[tier] += 1
                         unique_tiers_by_tier_len[len(tier)].add(tier)
-
-            replace_replicas=sorted(replace_replicas, key= lambda x: len (num_devices_for_replica[x-1]))
-
+                    
             for replica in replace_replicas:
                 tier = ()
                 depth = 1
@@ -1053,8 +1047,12 @@ class RingBuilder(object):
                     # right tier.
                     children_copy=tier2children[tier]
                     g.write(str(children_copy) + '\n')
-                    children_copy=self.policy_filter (children_copy, replica, depth, policy_info_copy)
-                    g.write (str(replica)+ ' ' + str(depth) + ' ' + str(policy_info_copy) + '\n')
+                    if depth is 1:
+                        children_copy=self.policy_filter (children_copy, replica, 'region', policy_info, assigned_replicas_region)
+                    elif depth is 2:
+                        children_copy=self.policy_filter (children_copy, replica, 'zone', policy_info, assigned_replicas_zone)
+                    g.write (str(part) + ' ' + str(replica)+ ' ' + str(depth))
+                    g.write (str(assigned_replicas_region) + '\n' + str(assigned_replicas_zone))
                     g.write(str(children_copy) + '\n\n')
                     # f.write(str(children_copy) + '\n' + str(depth) + '\n\n')
                     
@@ -1076,18 +1074,8 @@ class RingBuilder(object):
                     depth += 1
                 dev = tier2devs[tier][-1]
                 f.write (str (part) + ' ' + str (replica) + ' ' + str (dev['region']) + ' ' + str (dev['zone']) + ' ' + str (dev['id']) + '\n')
-                selected_region = dev['region']
-                selected_zone = dev['zone']
-                for r in policy_info_copy[replica]['region-inclusion']:
-                    policy_info_copy[r-1]['region'] = set ([selected_region])
-                for z in policy_info_copy[replica]['zone-inclusion']:
-                    policy_info_copy[z-1]['zone'] = set ([selected_zone])
-                for r in policy_info_copy[replica]['region-exclusion']:
-                    if selected_region in policy_info_copy[r-1]['region']:
-                        policy_info_copy[r-1]['region'].remove(selected_region)
-                for z in policy_info_copy[replica]['zone-exclusion']:
-                    if selected_zone in policy_info_copy[z-1]['zone']:
-                        policy_info_copy[z-1]['zone'].remove(selected_zone)
+                assigned_replicas_region[replica] = dev['region']
+                assigned_replicas_zone[replica] = dev['zone']
                 dev['parts_wanted'] -= 1
                 dev['parts'] += 1
                 old_sort_key = dev['sort_key']
@@ -1131,13 +1119,11 @@ class RingBuilder(object):
             del dev['sort_key']
             del dev['tiers']
 
-    def policy_filter (self, arr, replica, depth, policy_info_copy):
-        if depth is 1:
-            return filter (lambda x: x[0] in policy_info_copy[replica]['region'], arr)
-        if depth is 2:
-            return filter (lambda x: x[1] in policy_info_copy[replica]['zone'], arr)
-        return arr
-        
+    def policy_filter (self, arr, replica, tier, policy_info, assigned_replicas):
+        if tier == 'region':
+            return filter (lambda x: evaluate (policy_info[replica][tier], x[0], assigned_replicas), arr)
+        else:
+            return filter (lambda x: evaluate (policy_info[replica][tier], x[1], assigned_replicas), arr)
 
     def _sort_key_for(self, dev):
         return (dev['parts_wanted'], random.randint(0, 0xFFFF), dev['id'])

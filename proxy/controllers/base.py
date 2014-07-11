@@ -51,7 +51,7 @@ from swift.common.swob import Request, Response, HeaderKeyDict, Range, \
 from swift.common.request_helpers import strip_sys_meta_prefix, \
     strip_user_meta_prefix, is_user_meta, is_sys_meta, is_sys_or_user_meta
 from swift.common.storage_policy import POLICY_INDEX, POLICY, POLICIES
-
+from swift.common import crypt
 
 def update_headers(response, headers):
     """
@@ -669,6 +669,14 @@ class GetOrHeadHandler(object):
                        from.
         :param node: The node the source is reading from, for logging purposes.
         """
+
+        policy_idx =  req.headers[POLICY_INDEX]
+        obj_ring = self.app.get_object_ring(policy_idx)
+        if True in obj_ring.encrypted:
+            encryption = True
+        else:
+            encryption = False
+        
         try:
             nchunks = 0
             bytes_read_from_source = 0
@@ -679,6 +687,8 @@ class GetOrHeadHandler(object):
                 try:
                     with ChunkReadTimeout(node_timeout):
                         chunk = source.read(self.app.object_chunk_size)
+                        if encryption is True:
+                            chunk = crypt.xor_crypt_string (chunk, crypt.key)
                         nchunks += 1
                         bytes_read_from_source += len(chunk)
                 except ChunkReadTimeout:
