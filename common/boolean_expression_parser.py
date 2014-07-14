@@ -98,7 +98,6 @@ def parse(boolean_expr):
                     S.append(Formula(literal=char))
         else:
             throw_exception()
-    # print S
     F = S.pop()
     if S != []:
         throw_exception()
@@ -113,6 +112,8 @@ def evaluate (boolean_formula, val, assigned_replicas):
                 return 2 * (assigned_replicas[boolean_formula.literal.num-1] == val)
             return 1
         else:
+            if val is None:
+                return 1
             return 2 * (boolean_formula.literal.num == val)
     else:
         if boolean_formula.operator.val == 'not':

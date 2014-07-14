@@ -173,6 +173,25 @@ def _parse_add_values(argvish):
             if rest.startswith('_'):
                 meta = rest[1:]
 
+            dev = {}
+
+            if meta != '':
+                try:
+                    property_assignment_list = meta.split('_')
+                    for property_assignment in property_assignment_list:
+                        property_name = property_assignment.split('=')[0]
+                        property_val = property_assignment.split('=')[1]
+                        if property_val.lower() == 'true':
+                            dev[property_name] = True
+                        elif property_val.lower() == 'false':
+                            dev[property_name] = False
+                        else:
+                            print 'invalid property value for property ' + property_name
+                            exit(EXIT_ERROR)
+                except IndexError:
+                    print 'invalid property information for the device'
+                    exit(EXIT_ERROR)
+
             try:
                 weight = float(weightstr)
             except ValueError:
@@ -185,11 +204,17 @@ def _parse_add_values(argvish):
                 print "The on-disk ring builder is unchanged.\n"
                 exit(EXIT_ERROR)
 
-            parsed_devs.append({'region': region, 'zone': zone, 'ip': ip,
-                                'port': port, 'device': device_name,
-                                'replication_ip': replication_ip,
-                                'replication_port': replication_port,
-                                'weight': weight, 'meta': meta})
+            dev['region'] = region
+            dev['zone'] = zone
+            dev['ip'] = ip
+            dev['port'] = port
+            dev['device'] = device_name
+            dev['replication_ip'] = replication_ip
+            dev['replication_port'] = replication_port
+            dev['weight'] = weight
+            dev['meta'] = meta
+
+            parsed_devs.append(dev)
         return parsed_devs
     else:
         try:

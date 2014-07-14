@@ -25,9 +25,11 @@ from time import time
 
 from swift.common import exceptions
 from swift.common import policy_parser
-from swift.common.boolean_expression_parser import evaluate, three_valued_and
+from swift.common.boolean_expression_parser import evaluate, three_valued_and, print_formula
 from swift.common.ring import RingData
 from swift.common.ring.utils import tiers_for_dev, build_tier_tree
+
+EXIT_ERROR = 2
 
 MAX_BALANCE = 999.99
 
@@ -972,6 +974,22 @@ class RingBuilder(object):
         tier2sort_key = defaultdict(tuple)
         tier2dev_sort_key = defaultdict(list)
         max_tier_depth = 0
+
+        eligible_devices_tier = []
+
+        for i in range (0, int (self.replicas)):
+            eligible_devices_replica = defaultdict(tuple)
+            for dev in available_devs:
+                for tier in dev['tiers']:
+                    eligible_devices_replica[tier] = False
+            eligible_devices_tier.append (eligible_devices_replica)
+
+        for i in range (0, int (self.replicas)):
+            for dev in available_devs:
+                if self.check_device_properties (dev, policy_info[i]['device-properties']) == True:
+                    for tier in dev['tiers']:
+                        eligible_devices_tier[i][tier] = True
+
         for dev in available_devs:
             for tier in dev['tiers']:
                 tier2devs[tier].append(dev)  # <-- starts out sorted!
@@ -997,25 +1015,29 @@ class RingBuilder(object):
             tiers_list = new_tiers_list
             depth += 1
 
-        f = open ('part_replicas_info_v2','w')
-        g=open('filter_info', 'w')
-
         for part, replace_replicas in reassign_parts:
             # Gather up what other tiers (regions, zones, ip/ports, and
             # devices) the replicas not-to-be-moved are in for this part.
             other_replicas = defaultdict(int)
             unique_tiers_by_tier_len = defaultdict(set)
-            assigned_replicas_region = {}
-            assigned_replicas_zone = {}            
+            assigned_replicas = {}
             for replica in self._replicas_for_part(part):
                 if replica not in replace_replicas:
-                    assigned_replicas_region[replica] = self._replica2part2dev[replica][part]['region']
-                    assigned_replicas_zone[replica] = self._replica2part2dev[replica][part]['zone']
+                    assigned_replicas[replica] = devs[self._replica2part2dev[replica][part]]
                     for tier in dev['tiers']:
                         other_replicas[tier] += 1
                         unique_tiers_by_tier_len[len(tier)].add(tier)
-                    
-            for replica in replace_replicas:
+
+            replace_replicas = set(replace_replicas)
+            while replace_replicas != set():
+                try:
+                    replica = min ((r for r in replace_replicas),
+                                   key=lambda r: self.get_num_eligible_devices (r, policy_info, available_devs, assigned_replicas))
+                except ValueError:
+                    print 'The policy specified is infeasible'
+                    exit(EXIT_ERROR)
+
+                replace_replicas.remove(replica)
                 tier = ()
                 depth = 1
                 while depth <= max_tier_depth:
@@ -1046,15 +1068,10 @@ class RingBuilder(object):
                     # short-circuit the search while still ensuring we get the
                     # right tier.
                     children_copy=tier2children[tier]
-                    g.write(str(children_copy) + '\n')
                     if depth is 1:
-                        children_copy=self.policy_filter (children_copy, replica, 'region', policy_info, assigned_replicas_region)
+                        children_copy=self.policy_filter (children_copy, replica, 'region', policy_info, assigned_replicas)
                     elif depth is 2:
-                        children_copy=self.policy_filter (children_copy, replica, 'zone', policy_info, assigned_replicas_zone)
-                    g.write (str(part) + ' ' + str(replica)+ ' ' + str(depth))
-                    g.write (str(assigned_replicas_region) + '\n' + str(assigned_replicas_zone))
-                    g.write(str(children_copy) + '\n\n')
-                    # f.write(str(children_copy) + '\n' + str(depth) + '\n\n')
+                        children_copy=self.policy_filter (children_copy, replica, 'zone', policy_info, assigned_replicas)
                     
                     candidates_with_replicas = \
                         unique_tiers_by_tier_len[len(tier) + 1]
@@ -1064,18 +1081,25 @@ class RingBuilder(object):
                     if len(children_copy) > \
                             len(candidates_with_replicas):
                         # There exists at least one tier with 0 other replicas
-                        tier = max((t for t in children_copy
-                                    if other_replicas[t] == 0),
-                                   key=tier2sort_key.__getitem__)
+                        try:
+                            tier = max((t for t in children_copy
+                                        if other_replicas[t] == 0 and eligible_devices_tier[replica][t] == True),
+                                       key=tier2sort_key.__getitem__)
+                        except ValueError:
+                            print 'The policy specified is infeasible.'
+                            exit(EXIT_ERROR)
                     else:
-                        tier = max(children_copy,
-                                   key=lambda t: (-other_replicas[t],
-                                                  tier2sort_key[t]))
+                        try:
+                            tier = max((t for t in children_copy
+                                       if eligible_devices_tier[replica][t] == True),
+                                       key=lambda t: (-other_replicas[t],
+                                                      tier2sort_key[t]))
+                        except ValueError:
+                            print 'The policy specified is infeasible.'
+                            exit(EXIT_ERROR)
                     depth += 1
                 dev = tier2devs[tier][-1]
-                f.write (str (part) + ' ' + str (replica) + ' ' + str (dev['region']) + ' ' + str (dev['zone']) + ' ' + str (dev['id']) + '\n')
-                assigned_replicas_region[replica] = dev['region']
-                assigned_replicas_zone[replica] = dev['zone']
+                assigned_replicas[replica] = dev
                 dev['parts_wanted'] -= 1
                 dev['parts'] += 1
                 old_sort_key = dev['sort_key']
@@ -1113,17 +1137,55 @@ class RingBuilder(object):
                         new_index, new_last_sort_key)
 
                 self._replica2part2dev[replica][part] = dev['id']
-            f.write('\n')
+            
         # Just to save memory and keep from accidental reuse.
         for dev in self._iter_devs():
             del dev['sort_key']
             del dev['tiers']
 
+    def get_num_eligible_devices (self, replica, policy_info, available_devs, assigned_replicas):
+        assigned_replicas_region = {}
+        assigned_replicas_zone = {}
+        for r in assigned_replicas:
+            assigned_replicas_region[r] = assigned_replicas[r]['region']
+            assigned_replicas_zone[r] = assigned_replicas[r]['zone']
+        num = 0
+        for dev in available_devs:
+            info = policy_info[replica]
+            if self.check_device_properties (dev, info['device-properties']) == False:
+                continue
+            num += three_valued_and(evaluate (info['region'], dev['region'], assigned_replicas_region), evaluate (info['zone'], dev['zone'], assigned_replicas_zone))
+        return num
+
+    def check_device_properties(self, dev, device_properties):
+        try:
+            for property_name in device_properties:
+                if device_properties[property_name] != dev[property_name]:
+                    return False
+            return True
+        except KeyError:
+            print 'Property ' + property_name + ' not specified for device id ' + str(dev['id'])
+            exit(EXIT_ERROR)
+
+
     def policy_filter (self, arr, replica, tier, policy_info, assigned_replicas):
+        assigned_replicas_region = {}
+        assigned_replicas_zone = {}
+        for r in assigned_replicas:
+            assigned_replicas_region[r] = assigned_replicas[r]['region']
+            assigned_replicas_zone[r] = assigned_replicas[r]['zone']
+
         if tier == 'region':
-            return filter (lambda x: evaluate (policy_info[replica][tier], x[0], assigned_replicas), arr)
+            return filter (lambda x: evaluate (policy_info[replica][tier], x[0], assigned_replicas_region) and self.check_consistency (policy_info, tier, assigned_replicas_region, x[0], replica), arr)
         else:
-            return filter (lambda x: evaluate (policy_info[replica][tier], x[1], assigned_replicas), arr)
+            return filter (lambda x: evaluate (policy_info[replica][tier], x[1], assigned_replicas_zone) and self.check_consistency (policy_info, tier, assigned_replicas_zone, x[1], replica), arr)
+
+    def check_consistency (self, policy_info, tier, assigned_replicas_tier, assig, replica):
+        assigned_replicas_tier[replica] = assig
+        for i in assigned_replicas_tier:
+            if not evaluate (policy_info[i][tier], assigned_replicas_tier[i], assigned_replicas_tier):
+                return False
+        return True
 
     def _sort_key_for(self, dev):
         return (dev['parts_wanted'], random.randint(0, 0xFFFF), dev['id'])
